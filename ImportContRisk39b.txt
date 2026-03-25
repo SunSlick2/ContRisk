@@ -1,0 +1,119 @@
+' --- Extract NOP for DACS-NOTIONAL clients ---
+Dim nopMio As Variant
+nopMio = Empty  ' Initialize as empty
+
+' Search for MARGINING row in the parsed rows
+Dim marginRowIndex As Long
+Dim schemeRowIndex As Long
+Dim nopRowIndex As Long
+Dim foundMargin As Boolean
+Dim nopIdx As Long  ' Use nopIdx as inner loop variable
+foundMargin = False
+
+For i = 0 To UBound(rows)
+    If Len(Trim(rows(i))) > 0 Then
+        rowData = Application.Trim(rows(i))
+        
+        ' Look for row that contains only the word "MARGINING" (standalone)
+        If Trim(rowData) = "MARGINING" Then
+            marginRowIndex = i
+            foundMargin = True
+            Exit For
+        End If
+    End If
+Next i
+
+If foundMargin Then
+    ' Check the next row for "Scheme"
+    If marginRowIndex + 1 <= UBound(rows) Then
+        Dim schemeRow As String
+        schemeRow = Application.Trim(rows(marginRowIndex + 1))
+        
+        If InStr(1, schemeRow, "Scheme", vbTextCompare) > 0 Then
+            ' Split the row by tab
+            Dim schemeLineData As Variant
+            schemeLineData = Split(schemeRow, vbTab)
+            
+            ' Find the word next to "Scheme" (case insensitive)
+            For nopIdx = 0 To UBound(schemeLineData)
+                If UCase(Trim(schemeLineData(nopIdx))) = "SCHEME" Then
+                    If nopIdx + 1 <= UBound(schemeLineData) Then
+                        Dim schemeWord As String
+                        schemeWord = Trim(schemeLineData(nopIdx + 1))
+                        
+                        ' Check if the scheme word is "DACS-NOTIONAL"
+                        If UCase(schemeWord) = "DACS-NOTIONAL" Then
+                            ' Look 2 rows above the MARGINING row for NOP row
+                            nopRowIndex = marginRowIndex - 2
+                            
+                            If nopRowIndex >= 0 Then
+                                Dim nopRow As String
+                                nopRow = Application.Trim(rows(nopRowIndex))
+                                
+                                ' Check if row starts with "Unhedged Risk (NOP)"
+                                If InStr(1, nopRow, "Unhedged Risk (NOP)", vbTextCompare) = 1 Then
+                                    ' Split the row by tab
+                                    Dim nopLineData As Variant
+                                    nopLineData = Split(nopRow, vbTab)
+                                    
+                                    ' Look for the number (should be the next token after "Unhedged Risk (NOP)")
+                                    Dim nopNumberString As String
+                                    nopNumberString = ""
+                                    
+                                    For nopIdx = 0 To UBound(nopLineData)
+                                        If InStr(1, nopLineData(nopIdx), "Unhedged Risk (NOP)", vbTextCompare) > 0 Then
+                                            If nopIdx + 1 <= UBound(nopLineData) Then
+                                                nopNumberString = Trim(nopLineData(nopIdx + 1))
+                                            End If
+                                            Exit For
+                                        End If
+                                    Next nopIdx
+                                    
+                                    ' If not found by token approach, try to find number in the whole string
+                                    If nopNumberString = "" Then
+                                        ' Extract number from the row (after the phrase)
+                                        Dim nopPos As Long
+                                        nopPos = InStr(1, nopRow, "Unhedged Risk (NOP)", vbTextCompare) + Len("Unhedged Risk (NOP)")
+                                        Dim remainingText As String
+                                        remainingText = Trim(Mid(nopRow, nopPos))
+                                        ' Split remaining text by tab and take first token
+                                        Dim remainingTokens As Variant
+                                        remainingTokens = Split(remainingText, vbTab)
+                                        If UBound(remainingTokens) >= 0 Then
+                                            nopNumberString = Trim(remainingTokens(0))
+                                        End If
+                                    End If
+                                    
+                                    ' Parse the number
+                                    If nopNumberString <> "" Then
+                                        ' Remove commas
+                                        nopNumberString = Replace(nopNumberString, ",", "")
+                                        ' Handle negative numbers
+                                        nopNumberString = Replace(nopNumberString, "(", "-")
+                                        nopNumberString = Replace(nopNumberString, ")", "")
+                                        
+                                        If IsNumeric(nopNumberString) Then
+                                            Dim nopNumber As Double
+                                            nopNumber = CDbl(nopNumberString)
+                                            
+                                            ' Only process positive numbers
+                                            If nopNumber > 0 Then
+                                                nopMio = Round(nopNumber / 1000000, 1)
+                                                errorMessages.Add "Client: " & clientIDValue & ", Info: NOP value extracted: " & nopNumber & " -> " & nopMio & " million"
+                                            Else
+                                                errorMessages.Add "Client: " & clientIDValue & ", Info: NOP value is negative or zero, skipping: " & nopNumber
+                                            End If
+                                        Else
+                                            errorMessages.Add "Client: " & clientIDValue & ", Warning: Could not parse NOP number: " & nopNumberString
+                                        End If
+                                    End If
+                                End If
+                            End If
+                        End If
+                    End If
+                    Exit For
+                End If
+            Next nopIdx
+        End If
+    End If
+End If

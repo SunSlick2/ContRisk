@@ -1,0 +1,49 @@
+                    ' --- Apply remarks to totalData (ensure at least 3 rows exist) ---
+                    Dim dataRowsForRemarks As Long
+                    dataRowsForRemarks = UBound(totalData, 1)
+                    
+                    ' Ensure we have at least 3 rows for remarks
+                    If dataRowsForRemarks < 3 Then
+                        ' Need to expand array to at least 3 rows
+                        Dim newRows As Long
+                        newRows = Application.Max(dataRowsForRemarks, 3)
+                        
+                        Dim expandedData() As Variant
+                        ReDim expandedData(1 To newRows, 1 To 24)
+                        
+                        ' Copy existing data
+                        For i = 1 To dataRowsForRemarks
+                            For k = 1 To 24
+                                expandedData(i, k) = totalData(i, k)
+                            Next k
+                        Next i
+                        
+                        ' Set remarks in column G (index 7)
+                        expandedData(1, 7) = remarkRow1
+                        If newRows >= 2 Then expandedData(2, 7) = remarkRow2
+                        If newRows >= 3 Then expandedData(3, 7) = remarkRow3
+                        
+                        totalData = expandedData
+                    Else
+                        ' Just set remarks in existing rows
+                        totalData(1, 7) = remarkRow1
+                        totalData(2, 7) = remarkRow2
+                        totalData(3, 7) = remarkRow3
+                    End If
+                    
+                    ' --- Apply NOPMio to column D if available (LAST OVERRIDE) ---
+                    If Not IsEmpty(nopMio) Then
+                        ' Override column D for the first row (ClientID row)
+                        If UBound(totalData, 1) >= 1 Then
+                            totalData(1, 4) = nopMio  ' Column D = index 4
+                            errorMessages.Add "Client: " & clientIDValue & ", Info: Column D overwritten with NOP value: " & nopMio
+                        End If
+                    End If
+                    
+                    ' Add debug info
+                    If crComment <> "" Then
+                        errorMessages.Add "Client: " & clientIDValue & ", Info: CR comment added: " & crComment
+                    End If
+                    If singleCurrencySuppressed Then
+                        errorMessages.Add "Client: " & clientIDValue & ", Info: Single currency netting suppressed - SCN comments added"
+                    End If

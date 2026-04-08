@@ -1,0 +1,1 @@
+ClientID,,,,,,,,,,,,,,Currency,Rate,,Exposure Ccy.,Total Delta Amt,Total Delta in Base Amt,Cash Delta Amt,Cash Delta in Base Amt,Option Delta Amt,Option Delta in Base Amt,,SCN. Exposure Ccy.,SCN. Cash Delta Amt,SCN. Delta in Base Amt,,Debug Remarks,,To Flip,Divide by,Mult by

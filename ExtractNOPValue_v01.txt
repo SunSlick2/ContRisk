@@ -1,0 +1,48 @@
+Private Function ExtractNOPValue(rows() As String, ByVal marginRowIndex As Long) As Variant
+    Dim nopRowIndex As Long
+    Dim nopRow As String
+    Dim nopLineData As Variant
+    Dim nopNumberString As String
+    Dim nopNumber As Double
+    Dim idx As Long
+    
+    nopRowIndex = marginRowIndex - 2
+    
+    If nopRowIndex >= 0 Then
+        nopRow = Application.Trim(rows(nopRowIndex))
+        
+        ' Check if row starts with "Unhedged Risk (NOP)"
+        If InStr(1, nopRow, "Unhedged Risk (NOP)", vbTextCompare) = 1 Then
+            nopLineData = Split(nopRow, vbTab)
+            nopNumberString = ""
+            
+            ' Loop through each tab-separated field to find the one containing the search text
+            For idx = 0 To UBound(nopLineData)
+                If InStr(1, nopLineData(idx), "Unhedged Risk (NOP)", vbTextCompare) > 0 Then
+                    ' The number is in the NEXT field (idx + 1)
+                    If idx + 1 <= UBound(nopLineData) Then
+                        nopNumberString = Trim(nopLineData(idx + 1))
+                    End If
+                    Exit For
+                End If
+            Next idx
+            
+            If nopNumberString <> "" Then
+                ' Clean up the number string
+                nopNumberString = Replace(nopNumberString, ",", "")
+                nopNumberString = Replace(nopNumberString, "(", "-")
+                nopNumberString = Replace(nopNumberString, ")", "")
+                
+                If IsNumeric(nopNumberString) Then
+                    nopNumber = CDbl(nopNumberString)
+                    If nopNumber > 0 Then
+                        ExtractNOPValue = Round(nopNumber / 1000000, 1)
+                        Exit Function
+                    End If
+                End If
+            End If
+        End If
+    End If
+    
+    ExtractNOPValue = Empty
+End Function

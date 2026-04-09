@@ -1,0 +1,30 @@
+Private Function CheckNotionalAccount(rows() As String, ByVal marginRowIndex As Long, ByRef nopMio As Variant) As Boolean
+    If marginRowIndex + 1 <= UBound(rows) Then
+        Dim schemeRow As String
+        schemeRow = Application.Trim(rows(marginRowIndex + 1))
+        
+        If InStr(1, schemeRow, "Scheme", vbTextCompare) > 0 Then
+            Dim schemeLineData As Variant
+            schemeLineData = Split(schemeRow, vbTab)
+            Dim k As Long
+            
+            For k = 0 To UBound(schemeLineData)
+                If UCase(Trim(schemeLineData(k))) = "SCHEME" Then
+                    If k + 1 <= UBound(schemeLineData) Then
+                        Dim schemeWord As String
+                        schemeWord = Trim(schemeLineData(k + 1))
+                        
+                        If UCase(schemeWord) = "DACS-NOTIONAL" Or UCase(schemeWord) = "DACS-120-NOT" Then
+                            nopMio = ExtractNOPValue(rows, marginRowIndex)
+                            CheckNotionalAccount = True
+                            Exit Function
+                        End If
+                    End If
+                    Exit For
+                End If
+            Next k
+        End If
+    End If
+    
+    CheckNotionalAccount = False
+End Function

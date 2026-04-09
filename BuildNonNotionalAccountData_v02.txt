@@ -1,0 +1,158 @@
+Private Function BuildNonNotionalAccountData(ByVal clientID As String, ByVal coverRatio As Double, totalRows As Collection, cashRows As Collection, optionRows As Collection, synthRows As Collection, fxRates As Object, ToFlipTable As Collection, ByVal singleCurrencySuppressed As Boolean) As Variant
+    Dim totalData() As Variant
+    Dim rowCount As Long
+    Dim i As Long, k As Long
+    Dim displayCcyPairs() As String
+    
+    ' Determine row count
+    rowCount = Application.Max(totalRows.Count, cashRows.Count, optionRows.Count)
+    
+    If rowCount = 0 Then
+        ReDim totalData(1 To 1, 1 To MAX_COLUMN)
+        totalData(1, 1) = clientID
+        totalData(1, 2) = Int(coverRatio)
+        BuildNonNotionalAccountData = totalData
+        Exit Function
+    End If
+    
+    ReDim totalData(1 To rowCount, 1 To MAX_COLUMN)
+    ReDim displayCcyPairs(1 To rowCount)
+    
+    ' Populate basic client info
+    totalData(1, 1) = clientID
+    totalData(1, 2) = Int(coverRatio)
+    
+    ' Populate data rows
+    For i = 1 To rowCount
+        If i > 1 Then
+            totalData(i, 1) = ""
+            totalData(i, 2) = ""
+        End If
+        
+        ' Get source data from Total rows (Section K)
+        Dim originalCcyPair As String
+        Dim riskCcy As String
+        Dim totalDeltaAmt As Double
+        
+        If i <= totalRows.Count Then
+            originalCcyPair = totalRows(i)(0)
+            riskCcy = totalRows(i)(1)
+            totalDeltaAmt = totalRows(i)(2)
+        End If
+        
+        ' Apply display flip logic
+        Dim displayCcyPair As String
+        displayCcyPair = ApplyDisplayFlip(originalCcyPair, ToFlipTable)
+        displayCcyPairs(i) = displayCcyPair
+        
+        ' Determine base currency from displayed pair
+        Dim baseCcyOfPair As String
+        baseCcyOfPair = Left(displayCcyPair, 3)
+        
+        ' Column C (3) = CcyPair (display flipped)
+        totalData(i, 3) = displayCcyPair
+        
+        ' Column R (18) = Exposure Ccy
+        totalData(i, 18) = riskCcy
+        
+        ' Column S (19) = Total Delta Amt (always populate)
+        totalData(i, 19) = totalDeltaAmt
+        
+        ' Column T (20) = Total Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+        If riskCcy <> baseCcyOfPair Then
+            Dim totalBaseAmt As Variant
+            totalBaseAmt = CalculateBaseAmount(originalCcyPair, totalDeltaAmt, fxRates, ToFlipTable)
+            If Not IsEmpty(totalBaseAmt) Then
+                totalData(i, 20) = totalBaseAmt
+            End If
+        End If
+        
+        ' Column U (21) = Cash Delta Amt (always populate)
+        If i <= cashRows.Count Then
+            Dim cashDeltaAmt As Double
+            cashDeltaAmt = cashRows(i)(2)
+            totalData(i, 21) = cashDeltaAmt
+            
+            ' Column V (22) = Cash Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+            If riskCcy <> baseCcyOfPair Then
+                Dim cashBaseAmt As Variant
+                cashBaseAmt = CalculateBaseAmount(originalCcyPair, cashDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(cashBaseAmt) Then
+                    totalData(i, 22) = cashBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column W (23) = Option Delta Amt (always populate)
+        If i <= optionRows.Count Then
+            Dim optionDeltaAmt As Double
+            optionDeltaAmt = optionRows(i)(2)
+            totalData(i, 23) = optionDeltaAmt
+            
+            ' Column X (24) = Option Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+            If riskCcy <> baseCcyOfPair Then
+                Dim optionBaseAmt As Variant
+                optionBaseAmt = CalculateBaseAmount(originalCcyPair, optionDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(optionBaseAmt) Then
+                    totalData(i, 24) = optionBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column D (4) = Total Delta (mio)
+        totalData(i, 4) = CalculateDeltaMio(totalData(i, 20), totalData(i, 19), riskCcy)
+        
+        ' Column F (6) = Cash Delta (mio)
+        totalData(i, 6) = CalculateDeltaMio(totalData(i, 22), totalData(i, 21), riskCcy)
+        
+        ' Column G (7) = Option Delta (mio)
+        totalData(i, 7) = CalculateDeltaMio(totalData(i, 24), totalData(i, 23), riskCcy)
+        
+        ' Column H (8) = SOV - blank
+        totalData(i, 8) = ""
+        
+        ' Column E (5) = Synth Exp (mio) - will be populated after SCN data
+        totalData(i, 5) = 0
+        
+        ' Column I (9) = Remark - will be populated later
+        totalData(i, 9) = ""
+    Next i
+    
+    ' --- Populate SCN Data to Column AB (28) from Section D ---
+    If synthRows.Count > 0 Then
+        Call PopulateSyntheticExposure(totalData, displayCcyPairs, synthRows)
+    End If
+    
+    ' --- Populate Column E (Synth Exp in mio) based on SCN suppressed flag ---
+    If singleCurrencySuppressed Then
+        ' SCN suppressed: Column E comes from Cash Delta (Column F)
+        For i = 1 To UBound(totalData, 1)
+            totalData(i, 5) = totalData(i, 6)  ' Copy Cash Delta mio to Synth Exp
+        Next i
+    Else
+        ' SCN not suppressed: Column E comes from Column AB / 1,000,000 (ALWAYS convert to mio)
+        For i = 1 To UBound(totalData, 1)
+            If Not IsEmpty(totalData(i, 28)) And IsNumeric(totalData(i, 28)) Then
+                Dim rawAmount As Double
+                rawAmount = CDbl(totalData(i, 28))
+                ' ALWAYS convert to millions for synth pos from AB (no XAU/XAG exception)
+                totalData(i, 5) = Round(rawAmount / 1000000, 1)
+            Else
+                totalData(i, 5) = 0
+            End If
+        Next i
+    End If
+    
+    ' --- Add CR Comments to Column I (9) ---
+    Dim crComment As String
+    crComment = GetCRComment(coverRatio)
+    Call AddRemarks(totalData, crComment, singleCurrencySuppressed)
+    
+    ' --- Merge FX rates into columns O & P (15 & 16) ---
+    Call MergeFXRates(totalData, fxRates)
+    
+    ' --- Add Debug Remarks to Column AD (30) ---
+    Call AddDebugRemarks(totalData, clientID, crComment, singleCurrencySuppressed)
+    
+    BuildNonNotionalAccountData = totalData
+End Function

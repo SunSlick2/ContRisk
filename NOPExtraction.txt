@@ -1,0 +1,30 @@
+						If InStr(1, nopRow, "Unhedged Risk (NOP)", vbTextCompare) = 1 Then
+                                                        Dim nopLineData As Variant
+                                                        nopLineData = Split(nopRow, vbTab)
+                                                        
+                                                        Dim nopNumberString As String
+                                                        nopNumberString = ""
+                                                        Dim nopIdx As Long
+                                                        
+                                                        For nopIdx = 0 To UBound(nopLineData)
+                                                            If InStr(1, nopLineData(nopIdx), "Unhedged Risk (NOP)", vbTextCompare) > 0 Then
+                                                                If nopIdx + 1 <= UBound(nopLineData) Then
+                                                                    nopNumberString = Trim(nopLineData(nopIdx + 1))
+                                                                End If
+                                                                Exit For
+                                                            End If
+                                                        Next nopIdx
+                                                        
+                                                        If nopNumberString <> "" Then
+                                                            nopNumberString = Replace(nopNumberString, ",", "")
+                                                            nopNumberString = Replace(nopNumberString, "(", "-")
+                                                            nopNumberString = Replace(nopNumberString, ")", "")
+                                                            
+                                                            If IsNumeric(nopNumberString) Then
+                                                                Dim nopNumber As Double
+                                                                nopNumber = CDbl(nopNumberString)
+                                                                If nopNumber > 0 Then
+                                                                    nopMio = Round(nopNumber / 1000000, 1)
+                                                                End If
+                                                            End If
+                                                        End If

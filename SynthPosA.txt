@@ -1,0 +1,67 @@
+Private Sub PopulateSCNData(totalData() As Variant, synthRows As Collection, displayCcyPairs() As String)
+    Dim i As Long, k As Long
+    Dim displayedCcyPair As String
+    Dim targetCurrency As String
+    Dim scnRowData() As String
+    Dim foundMatch As Boolean
+    Dim amountValue As String
+    Dim amountNum As Double
+    Dim position As String
+    
+    For i = 1 To UBound(totalData, 1)
+        displayedCcyPair = displayCcyPairs(i)
+        targetCurrency = Left(displayedCcyPair, 3)
+        foundMatch = False
+        
+        For k = 1 To synthRows.Count
+            scnRowData = synthRows(k)
+            
+            If UBound(scnRowData) >= 6 Then
+                Dim tsvCurrencyPair As String
+                Dim tsvFlippedPair As String
+                
+                tsvCurrencyPair = scnRowData(0)
+                If Len(tsvCurrencyPair) = 6 Then
+                    tsvFlippedPair = Right(tsvCurrencyPair, 3) & Left(tsvCurrencyPair, 3)
+                Else
+                    tsvFlippedPair = ""
+                End If
+                
+                ' Check for match against displayed currency pair
+                If tsvCurrencyPair = displayedCcyPair Or tsvFlippedPair = displayedCcyPair Then
+                    foundMatch = True
+                    
+                    ' Find which leg contains the target currency
+                    If scnRowData(3) = targetCurrency Then
+                        ' First leg matches
+                        amountValue = scnRowData(4)
+                        position = scnRowData(2)
+                    ElseIf scnRowData(6) = targetCurrency Then
+                        ' Second leg matches
+                        amountValue = scnRowData(7)
+                        position = scnRowData(5)
+                    Else
+                        ' No match found - skip this row
+                        Exit For
+                    End If
+                    
+                    ' Parse amount
+                    amountValue = Replace(amountValue, ",", "")
+                    If IsNumeric(amountValue) Then
+                        amountNum = CDbl(amountValue)
+                        ' Apply SHORT/LONG sign
+                        If UCase(position) = "SHORT" Then
+                            amountNum = -amountNum
+                        End If
+                        ' Column AB (28) = Raw signed amount
+                        totalData(i, 28) = amountNum
+                    End If
+                    
+                    Exit For
+                End If
+            End If
+        Next k
+        
+        ' If no match found, Column AB remains blank/empty
+    Next i
+End Sub

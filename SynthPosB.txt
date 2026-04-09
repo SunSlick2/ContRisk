@@ -1,0 +1,33 @@
+' --- Populate SCN Data to Column AB (28) ---
+If synthRows.Count > 0 Then
+    Call PopulateSCNData(totalData, synthRows, displayCcyPairs)
+End If
+
+' --- Populate Column E (Synth Exp in mio) ---
+If singleCurrencySuppressed Then
+    ' SCN suppressed: Column E comes from Cash Delta (Column F which is already populated)
+    ' Column F already has Cash Delta mio, so copy it to Column E
+    For i = 1 To UBound(totalData, 1)
+        totalData(i, 5) = totalData(i, 6)  ' Copy Cash Delta mio to Synth Exp
+    Next i
+Else
+    ' SCN not suppressed: Column E comes from Column AB / 1,000,000
+    For i = 1 To UBound(totalData, 1)
+        If Not IsEmpty(totalData(i, 28)) And IsNumeric(totalData(i, 28)) Then
+            Dim rawAmount As Double
+            rawAmount = CDbl(totalData(i, 28))
+            
+            ' Check risk currency for XAU/XAG (no division by 1M)
+            Dim riskCcy As String
+            riskCcy = totalData(i, 18)  ' Column R
+            
+            If riskCcy = "XAU" Or riskCcy = "XAG" Then
+                totalData(i, 5) = rawAmount
+            Else
+                totalData(i, 5) = Round(rawAmount / 1000000, 1)
+            End If
+        Else
+            totalData(i, 5) = 0
+        End If
+    Next i
+End If

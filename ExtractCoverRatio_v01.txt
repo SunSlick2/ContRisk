@@ -1,0 +1,21 @@
+Private Function ExtractCoverRatio(ByVal rowData As String) As Variant
+    Dim coverRatioString As String
+    Dim parts As Variant
+    
+    parts = Split(rowData, vbTab)
+    coverRatioString = Trim(parts(UBound(parts)))
+    coverRatioString = Replace(coverRatioString, ",", "")
+    
+    ' Check if the value is "OK" (case-insensitive)
+    If UCase(Trim(coverRatioString)) = "OK" Then
+        ExtractCoverRatio = "OK"
+        Exit Function
+    End If
+    
+    ' Otherwise try to parse as numeric
+    If IsNumeric(coverRatioString) Then
+        ExtractCoverRatio = CDbl(coverRatioString)
+    Else
+        ExtractCoverRatio = 0
+    End If
+End Function

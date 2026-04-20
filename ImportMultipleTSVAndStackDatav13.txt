@@ -1,0 +1,1330 @@
+' Global variable for initial directory
+Public Const LAST_ROW As Long = 29
+Public Const MAX_COLUMN As Long = 30  ' Column AD = 30
+Public Const  AutoitFullPath as string = "obfuscated"
+Public Const  ScriptPath  as string = "obfuscated"
+Public Const  ScriptName  as string = "obfuscated"
+
+Sub GrabContData()
+ Dim ws As Worksheet
+ Dim lastRow As Long
+
+'Set ws = ThisWorkbook.Sheets("ContRisk2")
+' lastRow = ws.Cells(ws.rows.Count, "K").End(xlUp).Row
+' Range("B4:K" & lastRow).ClearContents
+
+lastRow = ws.Cells(ws.rows.Count, "K").End(xlUp).row
+Range("B4:K" & lastRow).ClearContents
+Range("R4:R" & lastRow).ClearContents
+Range("K" & lastRow).Value = "Cleared"
+
+Dim Cmd As String
+
+Cmd = """" & AutoitFullPath & """ """ & ScriptPath & ScriptName & """"
+Shell Cmd, vbNormalFocus
+
+
+End Sub
+
+
+Sub ImportMultipleTSVAndStackDatav12() ' Version 12 for ContRisk7
+    Dim ws As Worksheet
+    Dim fileMap As Object
+    Dim ToFlipTable As Collection
+    Dim currentRow As Long
+    
+    ' --- 1. Setup Worksheet ---
+    Set ws = SetupWorksheet("ContRisk7")
+    If ws Is Nothing Then Exit Sub
+    
+    ' --- 2. Load Flip Table ---
+    Set ToFlipTable = LoadFlipTable(ws)
+    
+    ' --- 3. Select and Map Files ---
+    Set fileMap = SelectAndMapFiles()
+    If fileMap Is Nothing Then Exit Sub
+    
+    ' --- 4. Clear Old Data ---
+    ClearOldData ws
+    
+    ' --- 5. Process Each Client ---
+    currentRow = 4
+    Do While currentRow <= LAST_ROW
+        currentRow = ProcessClientBlock(ws, currentRow, fileMap, ToFlipTable)
+    Loop
+    
+    ' --- 6. Final Cleanup and Formatting ---
+    FinalCleanup ws
+    AddReferenceFormulas ws
+    ws.Range("A:AD").Columns.AutoFit
+    
+    ' --- 7. Update NOP Reference ---
+    ws.Range("D24").Value2 = "NOP" & Chr(10) & "($ mio)"
+    
+    MsgBox "Data update complete on sheet 'ContRisk7'!", vbInformation
+End Sub
+
+' ============================================================================
+' WORKSHEET SETUP FUNCTIONS
+' ============================================================================
+
+Private Function SetupWorksheet(sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(sheetName)
+    On Error GoTo 0
+    
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        ws.Name = sheetName
+        Call SetupHeaders(ws)
+    End If
+    
+    Set SetupWorksheet = ws
+End Function
+
+Private Sub SetupHeaders(ws As Worksheet)
+    ' Columns A through AD headers
+    ws.Cells(1, 1).Value = "ClientID"                    ' A
+    ws.Cells(1, 2).Value = ""                            ' B
+    ws.Cells(1, 3).Value = ""                            ' C
+    ws.Cells(1, 4).Value = ""                            ' D - Total Delta (mio)
+    ws.Cells(1, 5).Value = ""                            ' E - Synth Exp (mio)
+    ws.Cells(1, 6).Value = ""                            ' F - Cash Delta (mio)
+    ws.Cells(1, 7).Value = ""                            ' G - Option Delta (mio)
+    ws.Cells(1, 8).Value = ""                            ' H - SOV
+    ws.Cells(1, 9).Value = "Remark"                      ' I
+    ws.Cells(1, 10).Value = ""                           ' J
+    ws.Cells(1, 11).Value = ""                           ' K
+    ws.Cells(1, 12).Value = ""                           ' L
+    ws.Cells(1, 13).Value = ""                           ' M
+    ws.Cells(1, 14).Value = ""                           ' N
+    ws.Cells(1, 15).Value = "Currency"                   ' O
+    ws.Cells(1, 16).Value = "Rate"                       ' P
+    ws.Cells(1, 17).Value = ""                           ' Q
+    ws.Cells(1, 18).Value = "Exposure Ccy."              ' R
+    ws.Cells(1, 19).Value = "Total Delta Amt"            ' S
+    ws.Cells(1, 20).Value = "Total Delta in Base Amt"    ' T
+    ws.Cells(1, 21).Value = "Cash Delta Amt"             ' U
+    ws.Cells(1, 22).Value = "Cash Delta in Base Amt"     ' V
+    ws.Cells(1, 23).Value = "Option Delta Amt"           ' W
+    ws.Cells(1, 24).Value = "Option Delta in Base Amt"   ' X
+    ws.Cells(1, 25).Value = ""                           ' Y
+    ws.Cells(1, 26).Value = ""                           ' Z - Not used
+    ws.Cells(1, 27).Value = ""                           ' AA - Not used
+    ws.Cells(1, 28).Value = "SCN Raw Amt"                ' AB
+    ws.Cells(1, 29).Value = ""                           ' AC
+    ws.Cells(1, 30).Value = "Debug Remarks"              ' AD
+End Sub
+
+Private Function LoadFlipTable(ws As Worksheet) As Collection
+    Dim flipTable As New Collection
+    Dim flipEntry(2) As String
+    Dim k As Long
+    
+    k = 2
+    Do While Len(ws.Cells(k, 32).Value) > 0 And (Len(ws.Cells(k, 33).Value) > 0 Or Len(ws.Cells(k, 34).Value) > 0)
+        flipEntry(0) = ws.Cells(k, 32).Value  ' To Flip (Column AA = 27)
+        flipEntry(1) = ws.Cells(k, 33).Value  ' Divide by (Column AB = 28)
+        flipEntry(2) = ws.Cells(k, 34).Value  ' Mult by (Column AC = 29)
+        flipTable.Add flipEntry
+        k = k + 1
+    Loop
+    
+    Set LoadFlipTable = flipTable
+End Function
+
+Private Function SelectAndMapFiles() As Object
+    Dim fd As FileDialog
+    Dim fileMap As Object
+    Dim filePath As Variant
+    Dim fileName As String
+    Dim clientID As String
+    Dim startPos As Long, endPos As Long
+    
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    Set fileMap = CreateObject("Scripting.Dictionary")
+    
+    With fd
+        .Title = "Select TSV Files"
+        .Filters.Clear
+        .Filters.Add "TSV Files", "*.tsv"
+        .InitialFileName = INITIAL_DIRECTORY
+        .AllowMultiSelect = True
+        
+        If .Show = -1 Then
+            For Each filePath In .SelectedItems
+                fileName = Mid(filePath, InStrRev(filePath, "\") + 1)
+                startPos = InStr(fileName, "PORTFOLIO_ANALYSIS_") + Len("PORTFOLIO_ANALYSIS_")
+                endPos = InStr(startPos, fileName, "_")
+                
+                If startPos > Len("PORTFOLIO_ANALYSIS_") And endPos > startPos Then
+                    clientID = Mid(fileName, startPos, endPos - startPos)
+                Else
+                    clientID = "N/A"
+                End If
+                
+                If Not fileMap.Exists(clientID) Then
+                    fileMap.Add clientID, filePath
+                End If
+            Next filePath
+            Set SelectAndMapFiles = fileMap
+        Else
+            MsgBox "No file selected.", vbExclamation
+            Set SelectAndMapFiles = Nothing
+        End If
+    End With
+End Function
+
+Private Sub ClearOldData(ws As Worksheet)
+    If LAST_ROW > 1 Then
+        ws.Range("B4:I" & LAST_ROW - 1).ClearContents      ' Columns B through I
+        ws.Range("O4:AD" & LAST_ROW - 1).ClearContents    ' Columns O through AD
+    End If
+End Sub
+
+' ============================================================================
+' CLIENT PROCESSING
+' ============================================================================
+
+Private Function ProcessClientBlock(ws As Worksheet, ByVal currentRow As Long, fileMap As Object, ToFlipTable As Collection) As Long
+    Dim clientIDValue As String
+    Dim filePath As Variant
+    Dim totalData() As Variant
+    Dim rowsWritten As Long
+    Dim nextClientIDRow As Long
+    Dim oldBlockEndRow As Long
+    
+    clientIDValue = Trim(ws.Cells(currentRow, 1).Value)
+    
+    If Len(clientIDValue) > 0 And fileMap.Exists(clientIDValue) Then
+        filePath = fileMap(clientIDValue)
+        
+        ' Process the TSV file and get data array
+        totalData = ProcessTSVFile(filePath, clientIDValue, ToFlipTable)
+        
+        If Not IsArrayEmpty(totalData) Then
+            ' Write data to worksheet
+            ws.Cells(currentRow, 1).Resize(UBound(totalData, 1), UBound(totalData, 2)).Value = totalData
+            rowsWritten = UBound(totalData, 1)
+        Else
+            rowsWritten = 0
+        End If
+        
+        ' Clean up old data and find next client
+        nextClientIDRow = currentRow + 1
+        Do While nextClientIDRow <= LAST_ROW And Len(Trim(ws.Cells(nextClientIDRow, 1).Value)) = 0
+            nextClientIDRow = nextClientIDRow + 1
+        Loop
+        
+        oldBlockEndRow = nextClientIDRow - 1
+        
+        If currentRow + rowsWritten <= oldBlockEndRow Then
+            ws.Range(ws.Cells(currentRow + rowsWritten, 1), ws.Cells(oldBlockEndRow, MAX_COLUMN)).ClearContents
+        End If
+        
+        ProcessClientBlock = nextClientIDRow
+    Else
+        ProcessClientBlock = currentRow + 1
+    End If
+End Function
+
+Private Function IsArrayEmpty(arr As Variant) As Boolean
+    On Error Resume Next
+    IsArrayEmpty = (Not IsArray(arr)) Or (UBound(arr, 1) < LBound(arr, 1))
+    On Error GoTo 0
+End Function
+
+' ============================================================================
+' TSV PARSING - MAIN FUNCTION
+' ============================================================================
+
+Private Function ProcessTSVFile(ByVal filePath As String, ByVal clientID As String, ToFlipTable As Collection) As Variant
+    Dim fileData As String
+    Dim rows() As String
+    Dim totalData() As Variant
+    
+    ' Data collections
+    Dim totalRows As New Collection      ' Total row data (R, S, T)
+    Dim cashRows As New Collection       ' Cash row data (U, V)
+    Dim optionRows As New Collection     ' Option row data (W, X)
+    Dim synthRows As New Collection      ' Synthetic positions data (AB)
+    Dim fxRates As Object
+    Dim coverRatio As Variant
+    Dim singleCurrencySuppressed As Boolean
+    Dim isNotionalAccount As Boolean
+    Dim nopMio As Variant
+    
+    ' Read file
+    Open filePath For Input As #1
+    fileData = Input$(LOF(1), 1)
+    Close #1
+    
+    rows = Split(fileData, vbCrLf)
+    
+    Set fxRates = CreateObject("Scripting.Dictionary")
+    
+    ' Parse TSV file
+    Call ParseTSVFile(rows, totalRows, cashRows, optionRows, synthRows, fxRates, coverRatio, singleCurrencySuppressed, isNotionalAccount, nopMio, clientID)
+    
+    ' Build output array
+    If isNotionalAccount Then
+        totalData = BuildNotionalAccountData(clientID, coverRatio, nopMio)
+    Else
+        totalData = BuildNonNotionalAccountData(clientID, coverRatio, totalRows, cashRows, optionRows, synthRows, fxRates, ToFlipTable, singleCurrencySuppressed)
+    End If
+    
+    ProcessTSVFile = totalData
+End Function
+
+' ============================================================================
+' TSV PARSING - SECTION FUNCTIONS
+' ============================================================================
+
+Private Sub ParseTSVFile(rows() As String, totalRows As Collection, cashRows As Collection, optionRows As Collection, synthRows As Collection, _
+                            fxRates As Object, ByRef coverRatio As Variant, ByRef singleCurrencySuppressed As Boolean, ByRef isNotionalAccount As Boolean, _
+                            ByRef nopMio As Variant, ByVal clientID As String)
+    Dim i As Long
+    Dim rowData As String
+    Dim startSCNRates As Boolean, endSCNRates As Boolean
+    Dim startRiskCashflow As Boolean, endRiskCashflow As Boolean
+    Dim startSCNSynthetic As Boolean, endSCNSynthetic As Boolean
+    Dim marginRowIndex As Long
+    Dim foundMargin As Boolean
+    
+    startSCNRates = False: endSCNRates = False
+    startRiskCashflow = False: endRiskCashflow = False
+    startSCNSynthetic = False: endSCNSynthetic = False
+    foundMargin = False
+    
+    ' First pass: detect notional account and get cover ratio
+    For i = 0 To UBound(rows)
+        If Len(Trim(rows(i))) > 0 Then
+            rowData = Application.Trim(rows(i))
+            
+            ' Get Cover Ratio
+            If InStr(rowData, "Cover Ratio") > 0 Then
+                coverRatio = ExtractCoverRatio(rowData)
+            End If
+            
+            ' Detect MARGINING for notional accounts
+            If Trim(rowData) = "MARGINING" Then
+                marginRowIndex = i
+                foundMargin = True
+            End If
+        End If
+    Next i
+    
+    ' Check for notional account
+    If foundMargin Then
+        isNotionalAccount = CheckNotionalAccount(rows, marginRowIndex, nopMio)
+    End If
+    
+    ' Second pass: parse all data sections (only if not notional account)
+    If Not isNotionalAccount Then
+        For i = 0 To UBound(rows)
+            If Len(Trim(rows(i))) > 0 Then
+                rowData = Application.Trim(rows(i))
+                
+                ' Check for Single Currency Netting Suppressed
+                If InStr(rowData, "<*** SINGLE CURRENCY NETTING SUPPRESSED ***>") > 0 Then
+                    singleCurrencySuppressed = True
+                End If
+                
+                ' Parse FX Rates (Section B)
+                Call ParseFXRates(rowData, startSCNRates, endSCNRates, fxRates)
+                
+                ' Parse SCN Synthetic Positions (Section D)
+                Call ParseSCNSynthetic(rowData, startSCNSynthetic, endSCNSynthetic, synthRows)
+                
+                ' Parse Risk Cashflow (Section K) - Total, Cash, Option rows
+                Call ParseRiskCashflow(rows, i, rowData, startRiskCashflow, endRiskCashflow, totalRows, cashRows, optionRows)
+            End If
+        Next i
+    End If
+End Sub
+
+'Private Function ExtractCoverRatio(ByVal rowData As String) As Double
+'    Dim coverRatioString As String
+'    Dim parts As Variant
+'
+'    parts = Split(rowData, vbTab)
+'    coverRatioString = Trim(parts(UBound(parts)))
+'    coverRatioString = Replace(coverRatioString, ",", "")
+'
+'    If IsNumeric(coverRatioString) Then
+'        ExtractCoverRatio = CDbl(coverRatioString)
+'    Else
+'        ExtractCoverRatio = 0
+'    End If
+'End Function
+
+Private Function ExtractCoverRatio(ByVal rowData As String) As Variant
+    Dim coverRatioString As String
+    Dim parts As Variant
+    
+    parts = Split(rowData, vbTab)
+    coverRatioString = Trim(parts(UBound(parts)))
+    coverRatioString = Replace(coverRatioString, ",", "")
+    
+    ' Check if the value is "OK" (case-insensitive)
+    If UCase(Trim(coverRatioString)) = "OK" Then
+        ExtractCoverRatio = "OK"
+        Exit Function
+    End If
+    
+    ' Otherwise try to parse as numeric
+    If IsNumeric(coverRatioString) Then
+        ExtractCoverRatio = CDbl(coverRatioString)
+    Else
+        ExtractCoverRatio = 0
+    End If
+End Function
+
+
+Private Function CheckNotionalAccount(rows() As String, ByVal marginRowIndex As Long, ByRef nopMio As Variant) As Boolean
+    If marginRowIndex + 1 <= UBound(rows) Then
+        Dim schemeRow As String
+        schemeRow = Application.Trim(rows(marginRowIndex + 1))
+        
+        If InStr(1, schemeRow, "Scheme", vbTextCompare) > 0 Then
+            Dim schemeLineData As Variant
+            schemeLineData = Split(schemeRow, vbTab)
+            Dim k As Long
+            
+            For k = 0 To UBound(schemeLineData)
+                If UCase(Trim(schemeLineData(k))) = "SCHEME" Then
+                    If k + 1 <= UBound(schemeLineData) Then
+                        Dim schemeWord As String
+                        schemeWord = Trim(schemeLineData(k + 1))
+                        
+                        If UCase(schemeWord) = "DACS-NOTIONAL" Or UCase(schemeWord) = "DACS-120-NOT" Then
+                            nopMio = ExtractNOPValue(rows, marginRowIndex)
+                            CheckNotionalAccount = True
+                            Exit Function
+                        End If
+                    End If
+                    Exit For
+                End If
+            Next k
+        End If
+    End If
+    
+    CheckNotionalAccount = False
+End Function
+
+Private Function ExtractNOPValue(rows() As String, ByVal marginRowIndex As Long) As Variant
+    Dim nopRowIndex As Long
+    Dim nopRow As String
+    Dim nopLineData As Variant
+    Dim nopNumberString As String
+    Dim nopNumber As Double
+    Dim idx As Long
+    
+    nopRowIndex = marginRowIndex - 2
+    
+    If nopRowIndex >= 0 Then
+        nopRow = Application.Trim(rows(nopRowIndex))
+        
+        ' Check if row starts with "Unhedged Risk (NOP)"
+        If InStr(1, nopRow, "Unhedged Risk (NOP)", vbTextCompare) = 1 Then
+            nopLineData = Split(nopRow, vbTab)
+            nopNumberString = ""
+            
+            ' Loop through each tab-separated field to find the one containing the search text
+            For idx = 0 To UBound(nopLineData)
+                If InStr(1, nopLineData(idx), "Unhedged Risk (NOP)", vbTextCompare) > 0 Then
+                    ' The number is in the NEXT field (idx + 1)
+                    If idx + 1 <= UBound(nopLineData) Then
+                        nopNumberString = Trim(nopLineData(idx + 1))
+                    End If
+                    Exit For
+                End If
+            Next idx
+            
+            If nopNumberString <> "" Then
+                ' Clean up the number string
+                nopNumberString = Replace(nopNumberString, ",", "")
+                nopNumberString = Replace(nopNumberString, "(", "-")
+                nopNumberString = Replace(nopNumberString, ")", "")
+                
+                If IsNumeric(nopNumberString) Then
+                    nopNumber = CDbl(nopNumberString)
+                    If nopNumber > 0 Then
+                        ExtractNOPValue = Round(nopNumber / 1000000, 1)
+                        Exit Function
+                    End If
+                End If
+            End If
+        End If
+    End If
+    
+    ExtractNOPValue = Empty
+End Function
+
+'Private Function ExtractNumberFromRow(ByVal rowData As String, ByVal searchText As String) As String
+'    Dim pos As Long
+'    Dim remainingText As String
+'    Dim tokens As Variant
+'
+'    pos = InStr(1, rowData, searchText, vbTextCompare) + Len(searchText)
+'    remainingText = Trim(Mid(rowData, pos))
+'    tokens = Split(remainingText, vbTab)
+'
+'    If UBound(tokens) >= 0 Then
+'        ExtractNumberFromRow = Trim(tokens(0))
+'    Else
+'        ExtractNumberFromRow = ""
+'    End If
+'End Function
+
+Private Sub ParseFXRates(ByVal rowData As String, ByRef startSCNRates As Boolean, ByRef endSCNRates As Boolean, fxRates As Object)
+    If UCase(rowData) Like "B. SCN RATES*" Then startSCNRates = True
+    If UCase(rowData) Like "C. SCN BREAKDOWN*" Then endSCNRates = True
+    
+    If startSCNRates And Not endSCNRates Then
+        If InStr(1, rowData, "FX.Rate.", vbTextCompare) > 0 And InStr(1, rowData, ".Spot", vbTextCompare) > 0 Then
+            Dim lineData As Variant
+            Dim ccy As String
+            Dim fxRateString As String
+            
+            lineData = Split(rowData, vbTab)
+            ccy = Split(lineData(0), ".")(2)
+            fxRateString = Trim(lineData(UBound(lineData)))
+            fxRateString = Replace(fxRateString, ",", "")
+            
+            If IsNumeric(fxRateString) Then
+                If Not fxRates.Exists(ccy) Then
+                    fxRates.Add ccy, CDbl(fxRateString)
+                End If
+            End If
+        End If
+    End If
+End Sub
+
+Private Sub ParseSCNSynthetic(ByVal rowData As String, ByRef startSCNSynthetic As Boolean, ByRef endSCNSynthetic As Boolean, synthRows As Collection)
+    If rowData Like "D. SCN SYNTHETIC POSITIONS*" Then startSCNSynthetic = True
+    If rowData Like "E. SYNTHETIC POSITIONS*" Then endSCNSynthetic = True
+    
+    If startSCNSynthetic And Not endSCNSynthetic Then
+        Dim trimmedRow As String
+        trimmedRow = Trim(rowData)
+        If Len(trimmedRow) > 0 And Not (trimmedRow Like "----------*" Or trimmedRow Like "---*" Or trimmedRow Like "----------------------------------------------------------------*") Then
+            Dim lineData As Variant
+            Dim scnRow(7) As String
+            Dim k As Long
+            
+            lineData = Split(trimmedRow, vbTab)
+            If UBound(lineData) >= 5 Then
+                For k = 0 To 7
+                    If k <= UBound(lineData) Then
+                        scnRow(k) = Trim(lineData(k))
+                    Else
+                        scnRow(k) = ""
+                    End If
+                Next k
+                
+                If Len(scnRow(0)) >= 6 Then
+                    synthRows.Add scnRow
+                End If
+            End If
+        End If
+    End If
+End Sub
+
+Private Sub ParseRiskCashflow(rows() As String, ByVal i As Long, ByVal rowData As String, ByRef startRiskCashflow As Boolean, ByRef endRiskCashflow As Boolean, totalRows As Collection, cashRows As Collection, optionRows As Collection)
+    
+    ' Check for section boundaries
+    If rowData Like "K. RISK CASHFLOW*" Then
+        startRiskCashflow = True
+    End If
+    
+    If rowData Like "L. SEPARATED DIGITAL*" Then
+        endRiskCashflow = True
+        Exit Sub
+    End If
+    
+    ' Only process if we're inside the section
+    If startRiskCashflow And Not endRiskCashflow Then
+        ' Parse Total row
+        If rowData Like "Total*" Then
+            Dim totalRowData As Variant
+            totalRowData = ParseTotalRow(rowData)
+            
+            If Not IsEmpty(totalRowData) Then
+                totalRows.Add totalRowData
+                
+                ' Extract values into temporary variables
+                Dim tempCcyPair As String
+                Dim tempRiskCcy As String
+                
+                tempCcyPair = totalRowData(0)
+                tempRiskCcy = totalRowData(1)
+                
+                ' Parse Cash Trade row (i+1)
+                If i + 1 <= UBound(rows) Then
+                    Dim cashRowData As Variant
+                    cashRowData = ParseCashRow(Trim(rows(i + 1)), tempCcyPair, tempRiskCcy)
+                    If Not IsEmpty(cashRowData) Then
+                        cashRows.Add cashRowData
+                    End If
+                End If
+                
+                ' Parse Option Delta row (i+2)
+                If i + 2 <= UBound(rows) Then
+                    Dim optionRowData As Variant
+                    optionRowData = ParseOptionRow(Trim(rows(i + 2)), tempCcyPair, tempRiskCcy)
+                    If Not IsEmpty(optionRowData) Then
+                        optionRows.Add optionRowData
+                    End If
+                End If
+            End If
+        End If
+    End If
+End Sub
+
+Private Function ParseTotalRow(ByVal rowData As String) As Variant
+    Dim lineData As Variant
+    Dim totalRow(2) As Variant
+    Dim exposureString As String
+    
+    lineData = Split(rowData, vbTab)
+    If UBound(lineData) >= 6 Then
+        totalRow(0) = lineData(2)  ' CcyPair
+        totalRow(1) = lineData(4)  ' Risk Ccy (Exposure Ccy)
+        
+        exposureString = Trim(lineData(6))
+        exposureString = Replace(exposureString, ",", "")
+        exposureString = Replace(exposureString, "(", "-")
+        exposureString = Replace(exposureString, ")", "")
+        
+        If IsNumeric(exposureString) Then
+            totalRow(2) = CDbl(exposureString)  ' Delta Amt
+        Else
+            totalRow(2) = 0
+        End If
+        
+        ParseTotalRow = totalRow
+    Else
+        ParseTotalRow = Empty
+    End If
+End Function
+
+Private Function ParseCashRow(ByVal rowData As String, ByVal ccyPair As String, ByVal riskCcy As String) As Variant
+    Dim lineData As Variant
+    Dim cashRow(2) As Variant
+    Dim cashExposure As String
+    
+    If InStr(rowData, "Cash Trades") > 0 Then
+        lineData = Split(rowData, vbTab)
+        If UBound(lineData) >= 5 Then
+            cashRow(0) = ccyPair
+            cashRow(1) = riskCcy
+            
+            cashExposure = Trim(lineData(6))
+            cashExposure = Replace(cashExposure, ",", "")
+            cashExposure = Replace(cashExposure, "(", "-")
+            cashExposure = Replace(cashExposure, ")", "")
+            
+            If IsNumeric(cashExposure) Then
+                cashRow(2) = CDbl(cashExposure)
+            Else
+                cashRow(2) = 0
+            End If
+            
+            ParseCashRow = cashRow
+            Exit Function
+        End If
+    End If
+    
+    ParseCashRow = Empty
+End Function
+
+Private Function ParseOptionRow(ByVal rowData As String, ByVal ccyPair As String, ByVal riskCcy As String) As Variant
+    Dim lineData As Variant
+    Dim optionRow(2) As Variant
+    Dim optionExposure As String
+    
+    ' Option row contains "Options" or similar identifier
+    If InStr(rowData, "Options") > 0 Or InStr(rowData, "Option") > 0 Then
+        lineData = Split(rowData, vbTab)
+        If UBound(lineData) >= 5 Then
+            optionRow(0) = ccyPair
+            optionRow(1) = riskCcy
+            
+            optionExposure = Trim(lineData(6))
+            optionExposure = Replace(optionExposure, ",", "")
+            optionExposure = Replace(optionExposure, "(", "-")
+            optionExposure = Replace(optionExposure, ")", "")
+            
+            If IsNumeric(optionExposure) Then
+                optionRow(2) = CDbl(optionExposure)
+            Else
+                optionRow(2) = 0
+            End If
+            
+            ParseOptionRow = optionRow
+            Exit Function
+        End If
+    End If
+    
+    ParseOptionRow = Empty
+End Function
+
+' ============================================================================
+' DATA BUILDING FUNCTIONS
+' ============================================================================
+
+Private Function BuildNotionalAccountData(ByVal clientID As String, ByVal coverRatio As Variant, ByVal nopMio As Variant) As Variant
+    Dim totalData() As Variant
+    Dim crComment As String
+    
+    ReDim totalData(1 To 2, 1 To MAX_COLUMN)
+    
+        
+    ' Row 1: ClientID row
+    totalData(1, 1) = clientID                                    ' A
+    If IsNumeric(coverRatio) Then
+        totalData(1, 2) = Int(coverRatio)
+    Else                             ' B
+        totalData(1, 2) = coverRatio
+    End If
+    If Not IsEmpty(nopMio) Then
+        totalData(1, 4) = nopMio                                  ' D - NOP value
+    End If
+    
+    ' CR Comment for notional accounts
+    crComment = GetCRComment(coverRatio)
+    totalData(1, 9) = crComment                                   ' I - Remark
+    
+    ' Row 2: Blank
+    totalData(2, 1) = ""
+    
+    BuildNotionalAccountData = totalData
+End Function
+
+'Private Function BuildNonNotionalAccountData(ByVal clientID As String, ByVal coverRatio As Double, totalRows As Collection, cashRows As Collection, optionRows As Collection, synthRows As Collection, fxRates As Object, ToFlipTable As Collection, ByVal singleCurrencySuppressed As Boolean) As Variant
+'    Dim totalData() As Variant
+'    Dim rowCount As Long
+'    Dim i As Long, k As Long
+'    Dim displayCcyPairs() As String
+'
+'    ' Determine row count
+'    rowCount = Application.Max(totalRows.Count, cashRows.Count, optionRows.Count)
+'
+'    If rowCount = 0 Then
+'        ReDim totalData(1 To 1, 1 To MAX_COLUMN)
+'        totalData(1, 1) = clientID
+'        totalData(1, 2) = Int(coverRatio)
+'        BuildNonNotionalAccountData = totalData
+'        Exit Function
+'    End If
+'
+'    ReDim totalData(1 To rowCount, 1 To MAX_COLUMN)
+'    ReDim displayCcyPairs(1 To rowCount)
+'
+'    ' Populate basic client info
+'    totalData(1, 1) = clientID
+'    totalData(1, 2) = Int(coverRatio)
+'
+'    ' Populate data rows
+'    For i = 1 To rowCount
+'        If i > 1 Then
+'            totalData(i, 1) = ""
+'            totalData(i, 2) = ""
+'        End If
+'
+'        ' Get source data from Total rows (Section K)
+'        Dim originalCcyPair As String
+'        Dim riskCcy As String
+'        Dim totalDeltaAmt As Double
+'
+'        If i <= totalRows.Count Then
+'            originalCcyPair = totalRows(i)(0)
+'            riskCcy = totalRows(i)(1)
+'            totalDeltaAmt = totalRows(i)(2)
+'        End If
+'
+'        ' Apply display flip logic
+'        Dim displayCcyPair As String
+'        displayCcyPair = ApplyDisplayFlip(originalCcyPair, ToFlipTable)
+'        displayCcyPairs(i) = displayCcyPair
+'
+'        ' Column C (3) = CcyPair (display flipped)
+'        totalData(i, 3) = displayCcyPair
+'
+'        ' Column R (18) = Exposure Ccy
+'        totalData(i, 18) = riskCcy
+'
+'        ' Column S (19) = Total Delta Amt
+'        totalData(i, 19) = totalDeltaAmt
+'
+'        ' Calculate Total Delta in Base Amt (Column T = 20)
+'        Dim totalBaseAmt As Variant
+'        totalBaseAmt = CalculateBaseAmount(originalCcyPair, totalDeltaAmt, fxRates, ToFlipTable)
+'        If Not IsEmpty(totalBaseAmt) Then
+'            totalData(i, 20) = totalBaseAmt
+'        End If
+'
+'        ' Column U (21) = Cash Delta Amt, Column V (22) = Cash Delta in Base Amt
+'        If i <= cashRows.Count Then
+'            Dim cashDeltaAmt As Double
+'            cashDeltaAmt = cashRows(i)(2)
+'            totalData(i, 21) = cashDeltaAmt                         ' U - Cash Delta Amt
+'
+'            Dim cashBaseAmt As Variant
+'            cashBaseAmt = CalculateBaseAmount(originalCcyPair, cashDeltaAmt, fxRates, ToFlipTable)
+'            If Not IsEmpty(cashBaseAmt) Then
+'                totalData(i, 22) = cashBaseAmt                      ' V - Cash Delta in Base Amt
+'            End If
+'        End If
+'
+'        ' Column W (23) = Option Delta Amt, Column X (24) = Option Delta in Base Amt
+'        If i <= optionRows.Count Then
+'            Dim optionDeltaAmt As Double
+'            optionDeltaAmt = optionRows(i)(2)
+'            totalData(i, 23) = optionDeltaAmt                       ' W - Option Delta Amt
+'
+'            Dim optionBaseAmt As Variant
+'            optionBaseAmt = CalculateBaseAmount(originalCcyPair, optionDeltaAmt, fxRates, ToFlipTable)
+'            If Not IsEmpty(optionBaseAmt) Then
+'                totalData(i, 24) = optionBaseAmt                    ' X - Option Delta in Base Amt
+'            End If
+'        End If
+'
+'        ' Column D (4) = Total Delta (mio)
+'        totalData(i, 4) = CalculateDeltaMio(totalData(i, 20), totalData(i, 19), riskCcy)
+'
+'        ' Column F (6) = Cash Delta (mio)
+'        totalData(i, 6) = CalculateDeltaMio(totalData(i, 22), totalData(i, 21), riskCcy)
+'
+'        ' Column G (7) = Option Delta (mio)
+'        totalData(i, 7) = CalculateDeltaMio(totalData(i, 24), totalData(i, 23), riskCcy)
+'
+'        ' Column H (8) = SOV - blank
+'        totalData(i, 8) = ""
+'
+'        ' Column E (5) = Synth Exp (mio) - will be populated after SCN data
+'        totalData(i, 5) = 0
+'
+'        ' Column I (9) = Remark - will be populated later
+'        totalData(i, 9) = ""
+'    Next i
+'
+'    ' --- Populate SCN Data to Column AB (28) from Section D ---
+'    If synthRows.Count > 0 Then
+'        Call PopulateSyntheticExposure(totalData, displayCcyPairs, synthRows)
+'    End If
+'
+'    ' --- Populate Column E (Synth Exp in mio) based on SCN suppressed flag ---
+'    If singleCurrencySuppressed Then
+'        ' SCN suppressed: Column E comes from Cash Delta (Column F)
+'        For i = 1 To UBound(totalData, 1)
+'            totalData(i, 5) = totalData(i, 6)  ' Copy Cash Delta mio to Synth Exp
+'        Next i
+'    Else
+'        ' SCN not suppressed: Column E comes from Column AB / 1,000,000
+'        For i = 1 To UBound(totalData, 1)
+'            If Not IsEmpty(totalData(i, 28)) And IsNumeric(totalData(i, 28)) Then
+'                Dim rawAmount As Double
+'                Dim riskCcyForSynth As String
+'
+'                rawAmount = CDbl(totalData(i, 28))
+'                riskCcyForSynth = totalData(i, 18)  ' Column R - Exposure Ccy
+'
+'                ' Check for XAU/XAG (no division by 1M)
+'                If riskCcyForSynth = "XAU" Or riskCcyForSynth = "XAG" Then
+'                    totalData(i, 5) = rawAmount
+'                Else
+'                    totalData(i, 5) = Round(rawAmount / 1000000, 1)
+'                End If
+'            Else
+'                totalData(i, 5) = 0
+'            End If
+'        Next i
+'    End If
+'
+'    ' --- Add CR Comments to Column I (9) ---
+'    Dim crComment As String
+'    crComment = GetCRComment(coverRatio)
+'    Call AddRemarks(totalData, crComment, singleCurrencySuppressed)
+'
+'    ' --- Merge FX rates into columns O & P (15 & 16) ---
+'    Call MergeFXRates(totalData, fxRates)
+'
+'    ' --- Add Debug Remarks to Column AD (30) ---
+'    Call AddDebugRemarks(totalData, clientID, crComment, singleCurrencySuppressed)
+'
+'    BuildNonNotionalAccountData = totalData
+'End Function
+Private Function BuildNonNotionalAccountData(ByVal clientID As String, ByVal coverRatio As Double, totalRows As Collection, cashRows As Collection, optionRows As Collection, synthRows As Collection, fxRates As Object, ToFlipTable As Collection, ByVal singleCurrencySuppressed As Boolean) As Variant
+    Dim totalData() As Variant
+    Dim rowCount As Long
+    Dim i As Long, k As Long
+    Dim displayCcyPairs() As String
+    
+    ' Determine row count
+    rowCount = Application.Max(totalRows.Count, cashRows.Count, optionRows.Count)
+    
+    If rowCount = 0 Then
+        ReDim totalData(1 To 1, 1 To MAX_COLUMN)
+        totalData(1, 1) = clientID
+        totalData(1, 2) = Int(coverRatio)
+        BuildNonNotionalAccountData = totalData
+        Exit Function
+    End If
+    
+    ReDim totalData(1 To rowCount, 1 To MAX_COLUMN)
+    ReDim displayCcyPairs(1 To rowCount)
+    
+    ' Populate basic client info
+    totalData(1, 1) = clientID
+    
+    If IsNumeric(coverRatio) Then
+            totalData(1, 2) = Int(coverRatio)
+    Else
+        totalData(1, 2) = coverRatio
+    End If
+    ' Populate data rows
+    For i = 1 To rowCount
+        If i > 1 Then
+            totalData(i, 1) = ""
+            totalData(i, 2) = ""
+        End If
+        
+        ' Get source data from Total rows (Section K)
+        Dim originalCcyPair As String
+        Dim riskCcy As String
+        Dim totalDeltaAmt As Double
+        
+        If i <= totalRows.Count Then
+            originalCcyPair = totalRows(i)(0)
+            riskCcy = totalRows(i)(1)
+            totalDeltaAmt = totalRows(i)(2)
+        End If
+        
+        ' Apply display flip logic
+        Dim displayCcyPair As String
+        displayCcyPair = ApplyDisplayFlip(originalCcyPair, ToFlipTable)
+        displayCcyPairs(i) = displayCcyPair
+        
+        ' Determine base currency from displayed pair
+        Dim baseCcyOfPair As String
+        baseCcyOfPair = Left(displayCcyPair, 3)
+        
+        ' Column C (3) = CcyPair (display flipped)
+        totalData(i, 3) = displayCcyPair
+        
+        ' Column R (18) = Exposure Ccy
+        totalData(i, 18) = riskCcy
+        
+        ' Column S (19) = Total Delta Amt (always populate)
+        totalData(i, 19) = totalDeltaAmt
+        
+        ' Column T (20) = Total Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+        If riskCcy <> baseCcyOfPair Then
+            Dim totalBaseAmt As Variant
+            totalBaseAmt = CalculateBaseAmount(originalCcyPair, totalDeltaAmt, fxRates, ToFlipTable)
+            If Not IsEmpty(totalBaseAmt) Then
+                totalData(i, 20) = totalBaseAmt
+            End If
+        End If
+        
+        ' Column U (21) = Cash Delta Amt (always populate)
+        If i <= cashRows.Count Then
+            Dim cashDeltaAmt As Double
+            cashDeltaAmt = cashRows(i)(2)
+            totalData(i, 21) = cashDeltaAmt
+            
+            ' Column V (22) = Cash Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+            If riskCcy <> baseCcyOfPair Then
+                Dim cashBaseAmt As Variant
+                cashBaseAmt = CalculateBaseAmount(originalCcyPair, cashDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(cashBaseAmt) Then
+                    totalData(i, 22) = cashBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column W (23) = Option Delta Amt (always populate)
+        If i <= optionRows.Count Then
+            Dim optionDeltaAmt As Double
+            optionDeltaAmt = optionRows(i)(2)
+            totalData(i, 23) = optionDeltaAmt
+            
+            ' Column X (24) = Option Delta in Base Amt - ONLY if Exposure Ccy differs from base currency
+            If riskCcy <> baseCcyOfPair Then
+                Dim optionBaseAmt As Variant
+                optionBaseAmt = CalculateBaseAmount(originalCcyPair, optionDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(optionBaseAmt) Then
+                    totalData(i, 24) = optionBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column D (4) = Total Delta (mio)
+        totalData(i, 4) = CalculateDeltaMio(totalData(i, 20), totalData(i, 19), riskCcy)
+        
+        ' Column F (6) = Cash Delta (mio)
+        totalData(i, 6) = CalculateDeltaMio(totalData(i, 22), totalData(i, 21), riskCcy)
+        
+        ' Column G (7) = Option Delta (mio)
+        totalData(i, 7) = CalculateDeltaMio(totalData(i, 24), totalData(i, 23), riskCcy)
+        
+        ' Column H (8) = SOV - blank
+        totalData(i, 8) = ""
+        
+        ' Column E (5) = Synth Exp (mio) - will be populated after SCN data
+        totalData(i, 5) = 0
+        
+        ' Column I (9) = Remark - will be populated later
+        totalData(i, 9) = ""
+    Next i
+    
+    ' --- Populate SCN Data to Column AB (28) from Section D ---
+    If synthRows.Count > 0 Then
+        Call PopulateSyntheticExposure(totalData, displayCcyPairs, synthRows)
+    End If
+    
+    ' --- Populate Column E (Synth Exp in mio) based on SCN suppressed flag ---
+    If singleCurrencySuppressed Then
+        ' SCN suppressed: Column E comes from Cash Delta (Column F)
+        For i = 1 To UBound(totalData, 1)
+            totalData(i, 5) = totalData(i, 6)  ' Copy Cash Delta mio to Synth Exp
+        Next i
+    Else
+        ' SCN not suppressed: Column E comes from Column AB / 1,000,000 (ALWAYS convert to mio)
+        For i = 1 To UBound(totalData, 1)
+            If Not IsEmpty(totalData(i, 28)) And IsNumeric(totalData(i, 28)) Then
+                Dim rawAmount As Double
+                rawAmount = CDbl(totalData(i, 28))
+                ' ALWAYS convert to millions for synth pos from AB (no XAU/XAG exception)
+                totalData(i, 5) = Round(rawAmount / 1000000, 1)
+            Else
+                totalData(i, 5) = 0
+            End If
+        Next i
+    End If
+    
+    ' --- Add CR Comments to Column I (9) ---
+    Dim crComment As String
+    crComment = GetCRComment(coverRatio)
+    Call AddRemarks(totalData, crComment, singleCurrencySuppressed)
+    
+    ' --- Merge FX rates into columns O & P (15 & 16) ---
+    Call MergeFXRates(totalData, fxRates)
+    
+    ' --- Add Debug Remarks to Column AD (30) ---
+    Call AddDebugRemarks(totalData, clientID, crComment, singleCurrencySuppressed)
+    
+    BuildNonNotionalAccountData = totalData
+End Function
+Private Function ApplyDisplayFlip(ByVal originalCcyPair As String, ToFlipTable As Collection) As String
+    Dim k As Long
+    Dim currentFlipEntry() As String
+    
+    ApplyDisplayFlip = originalCcyPair
+    
+    For k = 1 To ToFlipTable.Count
+        currentFlipEntry = ToFlipTable(k)
+        If originalCcyPair = currentFlipEntry(0) Then
+            If Len(originalCcyPair) = 6 Then
+                ApplyDisplayFlip = Right(originalCcyPair, 3) & Left(originalCcyPair, 3)
+            End If
+            Exit For
+        End If
+    Next k
+End Function
+
+Private Function CalculateBaseAmount(ByVal ccyPair As String, ByVal exposureAmt As Double, fxRates As Object, ToFlipTable As Collection) As Variant
+    Dim k As Long
+    Dim currentFlipEntry() As String
+    Dim divCurrency As String, mulCurrency As String
+    Dim divRate As Double, mulRate As Double
+    Dim key As Variant
+    
+    For k = 1 To ToFlipTable.Count
+        currentFlipEntry = ToFlipTable(k)
+        If ccyPair = currentFlipEntry(0) Then
+            divRate = 1: mulRate = 1
+            divCurrency = currentFlipEntry(1)
+            mulCurrency = currentFlipEntry(2)
+            
+            For Each key In fxRates.Keys
+                If key = divCurrency Then divRate = fxRates(key)
+                If key = mulCurrency Then mulRate = fxRates(key)
+                If key = 1 Then
+                    mulRate = -1
+                    divRate = 1
+                End If
+                If key = -1 Then
+                    mulRate = 1
+                    divRate = 1
+                End If
+            Next key
+            
+            If divRate <> 0 And mulRate <> 0 Then
+                CalculateBaseAmount = (exposureAmt / divRate) * mulRate * -1
+                Exit Function
+            End If
+        End If
+    Next k
+    
+    CalculateBaseAmount = Empty
+End Function
+
+Private Function CalculateDeltaMio(ByVal baseAmt As Variant, ByVal deltaAmt As Variant, ByVal riskCcy As String) As Variant
+    Dim valueForMio As Double
+    
+    ' Special handling for XAU/XAG
+    If riskCcy = "XAU" Or riskCcy = "XAG" Then
+        If Not IsEmpty(baseAmt) And IsNumeric(baseAmt) Then
+            CalculateDeltaMio = CDbl(baseAmt)
+        ElseIf IsNumeric(deltaAmt) Then
+            CalculateDeltaMio = CDbl(deltaAmt)
+        Else
+            CalculateDeltaMio = 0
+        End If
+        Exit Function
+    End If
+    
+    ' Normal conversion to millions
+    If Not IsEmpty(baseAmt) And IsNumeric(baseAmt) Then
+        valueForMio = CDbl(baseAmt)
+    ElseIf IsNumeric(deltaAmt) Then
+        valueForMio = CDbl(deltaAmt)
+    Else
+        valueForMio = 0
+    End If
+    
+    CalculateDeltaMio = Round(valueForMio / 1000000, 1)
+End Function
+
+Private Sub PopulateSyntheticExposure(totalData() As Variant, displayCcyPairs() As String, synthRows As Collection)
+    Dim i As Long, k As Long
+    Dim displayedCcyPair As String
+    Dim targetCurrency As String
+    Dim scnRowData() As String
+    Dim amountValue As String
+    Dim amountNum As Double
+    Dim position As String
+    
+    For i = 1 To UBound(totalData, 1)
+        displayedCcyPair = displayCcyPairs(i)
+        targetCurrency = Left(displayedCcyPair, 3)
+        
+        For k = 1 To synthRows.Count
+            scnRowData = synthRows(k)
+            
+            If UBound(scnRowData) >= 6 Then
+                Dim tsvCurrencyPair As String
+                Dim tsvFlippedPair As String
+                
+                tsvCurrencyPair = scnRowData(0)
+                If Len(tsvCurrencyPair) = 6 Then
+                    tsvFlippedPair = Right(tsvCurrencyPair, 3) & Left(tsvCurrencyPair, 3)
+                Else
+                    tsvFlippedPair = ""
+                End If
+                
+                If tsvCurrencyPair = displayedCcyPair Or tsvFlippedPair = displayedCcyPair Then
+                    ' Find which leg contains the target currency
+                    If scnRowData(3) = targetCurrency Then
+                        amountValue = scnRowData(4)
+                        position = scnRowData(2)
+                    ElseIf scnRowData(6) = targetCurrency Then
+                        amountValue = scnRowData(7)
+                        position = scnRowData(5)
+                    Else
+                        Exit For
+                    End If
+                    
+                    amountValue = Replace(amountValue, ",", "")
+                    If IsNumeric(amountValue) Then
+                        amountNum = CDbl(amountValue)
+                        If UCase(position) = "SHORT" Then
+                            amountNum = -amountNum
+                        End If
+                        ' Column AB (28) = Raw signed amount
+                        totalData(i, 28) = amountNum
+                    End If
+                    Exit For
+                End If
+            End If
+        Next k
+    Next i
+End Sub
+
+Private Function GetCRComment(ByVal coverRatio As Variant) As String
+    If Not IsNumeric(coverRatio) Then
+        GetCRComment = ""
+        Exit Function
+    End If
+    Dim crValue As Double
+    crValue = CDbl(coverRatio)
+    
+    If crValue >= 80 And crValue <= 100 Then
+        GetCRComment = "Below Maintenance"
+    ElseIf crValue >= 75 And crValue < 80 Then
+        GetCRComment = "Close to Margin Call"
+    ElseIf crValue >= 55 And crValue < 75 Then
+        GetCRComment = "Margin Call"
+    ElseIf crValue >= 50 And crValue < 55 Then
+        GetCRComment = "Close to Margin Cut"
+    ElseIf crValue <= 50 And crValue > 0 Then
+        GetCRComment = "Margin Cut"
+    Else
+        GetCRComment = ""
+    End If
+End Function
+
+Private Sub AddRemarks(totalData() As Variant, ByVal crComment As String, ByVal singleCurrencySuppressed As Boolean)
+    Dim remarkRow1 As String, remarkRow2 As String, remarkRow3 As String
+    Dim dataRows As Long
+    Dim newRows As Long
+    Dim expandedData() As Variant
+    Dim i As Long, k As Long
+    
+    If singleCurrencySuppressed Then
+        If crComment <> "" Then
+            remarkRow1 = crComment
+            remarkRow2 = "SCN suppressed"
+            remarkRow3 = "Synth Pos col has cash delta in base ccy"
+        Else
+            remarkRow1 = "SCN suppressed"
+            remarkRow2 = "Synth Pos col has cash delta in base ccy"
+            remarkRow3 = ""
+        End If
+    Else
+        remarkRow1 = crComment
+        remarkRow2 = ""
+        remarkRow3 = ""
+    End If
+    
+    dataRows = UBound(totalData, 1)
+    
+    If dataRows < 3 Then
+        newRows = Application.Max(dataRows, 3)
+        ReDim expandedData(1 To newRows, 1 To MAX_COLUMN)
+        
+        For i = 1 To dataRows
+            For k = 1 To MAX_COLUMN
+                expandedData(i, k) = totalData(i, k)
+            Next k
+        Next i
+        
+        expandedData(1, 9) = remarkRow1   ' Column I
+        If newRows >= 2 Then expandedData(2, 9) = remarkRow2
+        If newRows >= 3 Then expandedData(3, 9) = remarkRow3
+        
+        totalData = expandedData
+    Else
+        totalData(1, 9) = remarkRow1
+        totalData(2, 9) = remarkRow2
+        totalData(3, 9) = remarkRow3
+    End If
+End Sub
+
+Private Sub MergeFXRates(totalData() As Variant, fxRates As Object)
+    Dim fxData() As Variant
+    Dim currentRows As Long
+    Dim fxRows As Long
+    Dim targetRows As Long
+    Dim mergedData() As Variant
+    Dim i As Long, k As Long
+    Dim key As Variant
+    
+    If fxRates.Count = 0 Then Exit Sub
+    
+    ' Create FX data array
+    ReDim fxData(1 To fxRates.Count, 1 To 2)
+    i = 1
+    For Each key In fxRates.Keys
+        fxData(i, 1) = key
+        fxData(i, 2) = fxRates(key)
+        i = i + 1
+    Next
+    
+    currentRows = UBound(totalData, 1)
+    fxRows = UBound(fxData, 1)
+    targetRows = Application.Max(currentRows, fxRows)
+    
+    ' Check array size limit
+    If targetRows > 100 Then
+        MsgBox "Warning: Data exceeds 100 rows. Truncating to prevent array overflow.", vbExclamation
+        targetRows = 100
+    End If
+    
+    ReDim mergedData(1 To targetRows, 1 To MAX_COLUMN)
+    
+    ' Copy existing totalData
+    For i = 1 To currentRows
+        For k = 1 To MAX_COLUMN
+            mergedData(i, k) = totalData(i, k)
+        Next k
+    Next i
+    
+    ' Copy FX data to columns O & P (15 & 16)
+    For i = 1 To fxRows
+        If i <= targetRows Then
+            mergedData(i, 15) = fxData(i, 1)   ' Column O - Currency
+            mergedData(i, 16) = fxData(i, 2)   ' Column P - Rate
+        End If
+    Next i
+    
+    totalData = mergedData
+End Sub
+
+Private Sub AddDebugRemarks(totalData() As Variant, ByVal clientID As String, ByVal crComment As String, ByVal singleCurrencySuppressed As Boolean)
+    Dim debugMsg As String
+    
+    debugMsg = "Client: " & clientID
+    If crComment <> "" Then
+        debugMsg = debugMsg & " | CR: " & crComment
+    End If
+    If singleCurrencySuppressed Then
+        debugMsg = debugMsg & " | SCN Suppressed"
+    End If
+    
+    If UBound(totalData, 1) >= 1 Then
+        totalData(1, 30) = debugMsg  ' Column AD
+    End If
+End Sub
+
+' ============================================================================
+' FINAL CLEANUP AND FORMATTING
+' ============================================================================
+
+Private Sub FinalCleanup(ws As Worksheet)
+    
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.rows.Count, "A").End(xlUp).row
+    If lastRow < LAST_ROW Then
+      lastRow = LAST_ROW
+    End If
+    ws.Range("A" & LAST_ROW & ":B" & lastRow).ClearContents
+
+End Sub
+
+Private Sub AddReferenceFormulas(ws As Worksheet)
+        
+    ws.Cells(LAST_ROW + 1, 1).Value = "Spot ref: Spot/Forward/Cash"
+    ws.Cells(LAST_ROW + 2, 1).Value = "USDJPY:"
+    ws.Cells(LAST_ROW + 3, 1).Value = "GBPJPY:"
+    ws.Cells(LAST_ROW + 5, 1).Value = "Spot ref: Structures"
+    ws.Cells(LAST_ROW + 6, 1).Value = "USDJPY:"
+    ws.Cells(LAST_ROW + 7, 1).Value = "GBPJPY:"
+    
+    With ws.Cells(LAST_ROW + 2, 2)
+        .Formula = "=P5"
+        .numberFormat = "0.00"
+        .HorizontalAlignment = xlLeft
+    End With
+    
+    With ws.Cells(LAST_ROW + 3, 2)
+        .Formula = "=P5*P4"
+        .numberFormat = "0.00"
+        .HorizontalAlignment = xlLeft
+    End With
+End Sub

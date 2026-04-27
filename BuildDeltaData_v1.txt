@@ -1,0 +1,232 @@
+Private Function BuildDeltaData(ByVal clientID As String, ByVal coverRatio As Variant, totalRows As Collection, cashRows As Collection, optionRows As Collection, synthRows As Collection, fxRates As Object, ToFlipTable As Collection, ByVal singleCurrencySuppressed As Boolean, ByVal nopRaw As Variant, ByVal nopMio As Variant, ByVal nopLimitBreach As Boolean, ByVal nopLimit As Variant) As Variant
+    Dim totalData() As Variant
+    Dim rowCount As Long
+    Dim i As Long, k As Long
+    Dim displayCcyPairs() As String
+    
+    ' Determine number of currency pair rows
+    rowCount = Application.Max(totalRows.Count, cashRows.Count, optionRows.Count)
+    
+    If rowCount = 0 Then
+        ' No currency pairs - just account row + empty row
+        ReDim totalData(1 To 2, 1 To MAX_COLUMN)
+        
+        ' Account row
+        totalData(1, 1) = clientID
+        If IsNumeric(coverRatio) Then
+            totalData(1, 2) = Int(coverRatio)
+        Else
+            totalData(1, 2) = coverRatio
+        End If
+        
+        ' Column Z - Raw NOP
+        If Not IsEmpty(nopRaw) Then
+            totalData(1, 26) = nopRaw
+        End If
+        
+        ' Remark column
+        Dim crCommentEmpty As String
+        crCommentEmpty = GetCRCommentValue(coverRatio)
+        totalData(1, 9) = crCommentEmpty
+        If nopLimitBreach Then
+            If totalData(1, 9) <> "" Then
+                totalData(1, 9) = totalData(1, 9) & " | "
+            End If
+            totalData(1, 9) = totalData(1, 9) & "NOP limit breached: NOP: " & nopMio & ", Limit: " & nopLimit
+        End If
+        If singleCurrencySuppressed Then
+            If totalData(1, 9) <> "" Then
+                totalData(1, 9) = totalData(1, 9) & " | "
+            End If
+            totalData(1, 9) = totalData(1, 9) & "SCN suppressed"
+        End If
+        
+        ' Empty row
+        For k = 1 To MAX_COLUMN
+            totalData(2, k) = ""
+        Next k
+        
+        BuildDeltaData = totalData
+        Exit Function
+    End If
+    
+    ' NEW DIMENSIONS: rowCount + 1 (instead of rowCount + 2)
+    ' Row 1: Account + First Currency Pair
+    ' Rows 2 to rowCount: Remaining Currency Pairs
+    ' Row rowCount+1: Empty row
+    ReDim totalData(1 To rowCount + 1, 1 To MAX_COLUMN)
+    ReDim displayCcyPairs(1 To rowCount)
+    
+    ' Initialize all rows to empty strings (clears any previous data)
+    For i = 1 To rowCount + 1
+        For k = 1 To MAX_COLUMN
+            totalData(i, k) = ""
+        Next k
+    Next i
+    
+    ' --- Account row data (Row 1 - will be merged with first currency pair) ---
+    totalData(1, 1) = clientID
+    If IsNumeric(coverRatio) Then
+        totalData(1, 2) = Int(coverRatio)
+    Else
+        totalData(1, 2) = coverRatio
+    End If
+    
+    ' Column Z (26) - Raw NOP for Account row
+    If Not IsEmpty(nopRaw) Then
+        totalData(1, 26) = nopRaw
+    End If
+    
+    ' --- Populate currency pair rows (first pair goes to row 1, others to rows 2+) ---
+    For i = 1 To rowCount
+        Dim originalCcyPair As String
+        Dim riskCcy As String
+        Dim totalDeltaAmt As Double
+        
+        If i <= totalRows.Count Then
+            originalCcyPair = totalRows(i)(0)
+            riskCcy = totalRows(i)(1)
+            totalDeltaAmt = totalRows(i)(2)
+        End If
+        
+        ' Apply display flip logic
+        Dim displayCcyPair As String
+        displayCcyPair = ApplyFlipToDisplay(originalCcyPair, ToFlipTable)
+        displayCcyPairs(i) = displayCcyPair
+        
+        ' Determine base currency from displayed pair
+        Dim baseCcyOfPair As String
+        baseCcyOfPair = Left(displayCcyPair, 3)
+        
+        ' Determine target row: first pair goes to row 1, others to row i
+        Dim dataRow As Long
+        If i = 1 Then
+            dataRow = 1  ' First currency pair merges with account row
+        Else
+            dataRow = i  ' Second pair goes to row 2, third to row 3, etc.
+        End If
+        
+        ' Column C (3) = CcyPair (display flipped)
+        totalData(dataRow, 3) = displayCcyPair
+        
+        ' Column R (18) = Exposure Ccy
+        totalData(dataRow, 18) = riskCcy
+        
+        ' Column S (19) = Total Delta Amt
+        totalData(dataRow, 19) = totalDeltaAmt
+        
+        ' Column T (20) = Total Delta in Base Amt (only if Exposure Ccy differs from base currency)
+        If riskCcy <> baseCcyOfPair Then
+            Dim totalBaseAmt As Variant
+            totalBaseAmt = CalculateBaseAmountValue(originalCcyPair, totalDeltaAmt, fxRates, ToFlipTable)
+            If Not IsEmpty(totalBaseAmt) Then
+                totalData(dataRow, 20) = totalBaseAmt
+            End If
+        End If
+        
+        ' Column U (21) = Cash Delta Amt
+        If i <= cashRows.Count Then
+            Dim cashDeltaAmt As Double
+            cashDeltaAmt = cashRows(i)(2)
+            totalData(dataRow, 21) = cashDeltaAmt
+            
+            ' Column V (22) = Cash Delta in Base Amt
+            If riskCcy <> baseCcyOfPair Then
+                Dim cashBaseAmt As Variant
+                cashBaseAmt = CalculateBaseAmountValue(originalCcyPair, cashDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(cashBaseAmt) Then
+                    totalData(dataRow, 22) = cashBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column W (23) = Option Delta Amt
+        If i <= optionRows.Count Then
+            Dim optionDeltaAmt As Double
+            optionDeltaAmt = optionRows(i)(2)
+            totalData(dataRow, 23) = optionDeltaAmt
+            
+            ' Column X (24) = Option Delta in Base Amt
+            If riskCcy <> baseCcyOfPair Then
+                Dim optionBaseAmt As Variant
+                optionBaseAmt = CalculateBaseAmountValue(originalCcyPair, optionDeltaAmt, fxRates, ToFlipTable)
+                If Not IsEmpty(optionBaseAmt) Then
+                    totalData(dataRow, 24) = optionBaseAmt
+                End If
+            End If
+        End If
+        
+        ' Column D (4) = Total Delta (mio)
+        totalData(dataRow, 4) = CalculateDeltaMioValue(totalData(dataRow, 20), totalData(dataRow, 19), riskCcy)
+        
+        ' Column F (6) = Cash Delta (mio)
+        totalData(dataRow, 6) = CalculateDeltaMioValue(totalData(dataRow, 22), totalData(dataRow, 21), riskCcy)
+        
+        ' Column G (7) = Option Delta (mio)
+        totalData(dataRow, 7) = CalculateDeltaMioValue(totalData(dataRow, 24), totalData(dataRow, 23), riskCcy)
+        
+        ' Column H (8) = Short Option Volume - always blank
+        totalData(dataRow, 8) = ""
+        
+        ' Column E (5) = Synth Exp (mio) - placeholder (will be populated after SCN data)
+        totalData(dataRow, 5) = 0
+    Next i
+    
+    ' --- Populate SCN Data to Column AB (28) ---
+    If synthRows.Count > 0 Then
+        Call PopulateSCNRawAmount(totalData, displayCcyPairs, synthRows, rowCount)
+    End If
+    
+    ' --- Populate Column E (Synth Exp in mio) ---
+    For i = 1 To rowCount
+        Dim dataRowE As Long
+        If i = 1 Then
+            dataRowE = 1
+        Else
+            dataRowE = i
+        End If
+        
+        If singleCurrencySuppressed Then
+            ' SCN suppressed: Column E comes from Cash Delta (Column F)
+            totalData(dataRowE, 5) = totalData(dataRowE, 6)
+        Else
+            ' SCN not suppressed: Column E comes from Column AB / 1,000,000
+            If Not IsEmpty(totalData(dataRowE, 28)) And IsNumeric(totalData(dataRowE, 28)) Then
+                Dim rawAmount As Double
+                rawAmount = CDbl(totalData(dataRowE, 28))
+                totalData(dataRowE, 5) = Round(rawAmount / 1000000, 1)
+            Else
+                totalData(dataRowE, 5) = 0
+            End If
+        End If
+    Next i
+    
+    ' --- Add remarks to Account row (Row 1) ---
+    Dim crComment As String
+    crComment = GetCRCommentValue(coverRatio)
+    totalData(1, 9) = crComment
+    
+    If nopLimitBreach Then
+        If totalData(1, 9) <> "" Then
+            totalData(1, 9) = totalData(1, 9) & " | "
+        End If
+        totalData(1, 9) = totalData(1, 9) & "NOP limit breached: NOP: " & nopMio & ", Limit: " & nopLimit
+    End If
+    
+    If singleCurrencySuppressed Then
+        If totalData(1, 9) <> "" Then
+            totalData(1, 9) = totalData(1, 9) & " | "
+        End If
+        totalData(1, 9) = totalData(1, 9) & "SCN suppressed"
+    End If
+    
+    ' --- Merge FX rates into columns O & P (15 & 16) starting at row 1 ---
+    Call MergeFXRateData(totalData, fxRates, rowCount + 1)
+    
+    ' --- Add debug remarks to Column AD (30) on row 1 ---
+    Call AddDebugInfo(totalData, clientID, crComment, singleCurrencySuppressed, nopLimitBreach, nopMio, nopLimit)
+    
+    ' Last row (rowCount+1) is already initialized as empty string
+    
+    BuildDeltaData = totalData
+End Function

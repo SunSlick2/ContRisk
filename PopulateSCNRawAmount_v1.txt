@@ -1,0 +1,59 @@
+Private Sub PopulateSCNRawAmount(totalData() As Variant, displayCcyPairs() As String, synthRows As Collection, ByVal rowCount As Long)
+    Dim i As Long, k As Long
+    Dim displayedCcyPair As String
+    Dim targetCurrency As String
+    Dim scnRowData() As String
+    Dim amountValue As String
+    Dim amountNum As Double
+    Dim position As String
+    
+    For i = 1 To rowCount
+        displayedCcyPair = displayCcyPairs(i)
+        targetCurrency = Left(displayedCcyPair, 3)
+        
+        For k = 1 To synthRows.Count
+            scnRowData = synthRows(k)
+            
+            If UBound(scnRowData) >= 6 Then
+                Dim tsvCurrencyPair As String
+                Dim tsvFlippedPair As String
+                
+                tsvCurrencyPair = scnRowData(0)
+                If Len(tsvCurrencyPair) = 6 Then
+                    tsvFlippedPair = Right(tsvCurrencyPair, 3) & Left(tsvCurrencyPair, 3)
+                Else
+                    tsvFlippedPair = ""
+                End If
+                
+                If tsvCurrencyPair = displayedCcyPair Or tsvFlippedPair = displayedCcyPair Then
+                    If scnRowData(3) = targetCurrency Then
+                        amountValue = scnRowData(4)
+                        position = scnRowData(2)
+                    ElseIf scnRowData(6) = targetCurrency Then
+                        amountValue = scnRowData(7)
+                        position = scnRowData(5)
+                    Else
+                        Exit For
+                    End If
+                    
+                    amountValue = Replace(amountValue, ",", "")
+                    If IsNumeric(amountValue) Then
+                        amountNum = CDbl(amountValue)
+                        If UCase(position) = "SHORT" Then
+                            amountNum = -amountNum
+                        End If
+                        ' Column AB (28) - target row: first pair row 1, others row i
+                        Dim targetRow As Long
+                        If i = 1 Then
+                            targetRow = 1
+                        Else
+                            targetRow = i
+                        End If
+                        totalData(targetRow, 28) = amountNum
+                    End If
+                    Exit For
+                End If
+            End If
+        Next k
+    Next i
+End Sub
